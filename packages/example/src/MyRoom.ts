@@ -9,6 +9,10 @@ import { database } from "./db/database.ts";
 // the dependency for anyone reading just this room file.
 import "@colyseus/auth";
 import { TrackUserSessionsPlugin } from "colyseus/plugins/track-user-sessions";
+import { resolveCoordinates } from "./coordinates.ts";
+
+export { hasFiniteCoordinates, resolveCoordinates } from "./coordinates.ts";
+export type { Coordinates } from "./coordinates.ts";
 
 const VERSION = 5;
 
@@ -18,6 +22,12 @@ export const Player = schema({
   score: t.number(),
 });
 export type Player = SchemaType<typeof Player>;
+
+// Accept the raw frame at the validation boundary. The atomic finite-pair
+// check in the movement handler decides whether it can replace state; using
+// z.number() here would make Zod reject NaN/Infinity and the framework would
+// close the client before the room can retain its previous position.
+const moveMessageSchema = z.unknown();
 
 export const MyRoomState = schema({
   mapWidth: t.number(),
@@ -93,9 +103,10 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
       apply: (room, client, data) => {
         const player = room.state.players.get(client.sessionId);
         if (!player || !data) return;
-        const d = data as { x: number; y: number; score: number };
-        player.x = d.x;
-        player.y = d.y;
+        const d = data as { x: unknown; y: unknown; score: number };
+        const position = resolveCoordinates(d, player);
+        player.x = position.x;
+        player.y = position.y;
         player.score = d.score;
       },
     }),
@@ -109,14 +120,11 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
 
   messages = {
     ...thirdPartyMessages,
-    move: validate(z.object({
-      x: z.number(),
-      y: z.number(),
-      z: z.number().optional()
-    }), (client, message) => {
+    move: validate(moveMessageSchema, (client, message) => {
       const player = this.state.players.get(client.sessionId)!;
-      player.x = message.x;
-      player.y = message.y;
+      const position = resolveCoordinates(message, player);
+      player.x = position.x;
+      player.y = position.y;
       console.log("MOVE", { sessionId: client.sessionId, VERSION });
     }),
 
@@ -140,10 +148,11 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
     this.onMessage("__move", (client, message) => {})
     this.onMessage("__dummy", (client, message) => { })
 
-    this.onMessage("move_with_validation", z.object({ x: z.number(), y: z.number() }), (client, message) => {
+    this.onMessage("move_with_validation", moveMessageSchema, (client, message) => {
       const player = this.state.players.get(client.sessionId)!;
-      player.x = message.x;
-      player.y = message.y;
+      const position = resolveCoordinates(message, player);
+      player.x = position.x;
+      player.y = position.y;
     });
 
     this.setSimulationInterval(() => this.update());
